@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,21 +22,20 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.boot.context.properties.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.util.Assert;
 
 import io.spring.githubchangeloggenerator.github.service.Repository;
 
 /**
- * Configuration properties for the Github repo.
+ * Configuration properties for the GitHub repo.
  *
  * @author Madhura Bhave
  * @author Phillip Webb
  * @author Mahendra Bishnoi
+ * @author Gary Russell
  */
 @ConfigurationProperties(prefix = "changelog")
-@ConstructorBinding
 public class ApplicationProperties {
 
 	/**
@@ -69,15 +68,22 @@ public class ApplicationProperties {
 	 */
 	private final List<ExternalLink> externalLinks;
 
+	/**
+	 * True to add sections to default instead of replacing.
+	 */
+	private final boolean addSections;
+
 	public ApplicationProperties(Repository repository, @DefaultValue("title") MilestoneReference milestoneReference,
-			List<Section> sections, Issues issues, Contributors contributors, List<ExternalLink> externalLinks) {
+			List<Section> sections, Issues issues, Contributors contributors, List<ExternalLink> externalLinks,
+			@DefaultValue("false") boolean addSections) {
 		Assert.notNull(repository, "Repository must not be null");
 		this.repository = repository;
 		this.milestoneReference = milestoneReference;
 		this.sections = (sections != null) ? sections : Collections.emptyList();
-		this.issues = (issues != null) ? issues : new Issues(null, null, null);
+		this.issues = (issues != null) ? issues : new Issues(null, null, null, true);
 		this.contributors = (contributors != null) ? contributors : new Contributors(null, null);
 		this.externalLinks = (externalLinks != null) ? externalLinks : Collections.emptyList();
+		this.addSections = addSections;
 	}
 
 	public Repository getRepository() {
@@ -102,6 +108,10 @@ public class ApplicationProperties {
 
 	public List<ExternalLink> getExternalLinks() {
 		return this.externalLinks;
+	}
+
+	public boolean isAddSections() {
+		return this.addSections;
 	}
 
 	/**
@@ -175,10 +185,17 @@ public class ApplicationProperties {
 		 */
 		private final Set<PortedIssue> ports;
 
-		public Issues(IssueSort sort, IssuesExclude exclude, Set<PortedIssue> ports) {
+		/**
+		 * Whether to generate a link to each issue in the changelog.
+		 */
+		private final boolean generateLinks;
+
+		public Issues(IssueSort sort, IssuesExclude exclude, Set<PortedIssue> ports,
+				@DefaultValue("true") boolean generateLinks) {
 			this.sort = sort;
 			this.exclude = (exclude != null) ? exclude : new IssuesExclude(null);
 			this.ports = (ports != null) ? ports : Collections.emptySet();
+			this.generateLinks = generateLinks;
 		}
 
 		public IssueSort getSort() {
@@ -191,6 +208,10 @@ public class ApplicationProperties {
 
 		public Set<PortedIssue> getPorts() {
 			return this.ports;
+		}
+
+		public boolean isGenerateLinks() {
+			return this.generateLinks;
 		}
 
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2022 the original author or authors.
+ * Copyright 2018-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -55,7 +56,7 @@ public class ChangelogGenerator {
 	private static final Comparator<Issue> TITLE_COMPARATOR = Comparator.comparing(Issue::getTitle,
 			String.CASE_INSENSITIVE_ORDER);
 
-	private static final Pattern ghUserMentionPattern = Pattern.compile("(^|[^\\w`])(@[\\w-]+)");
+	private static final List<Escape> escapes = Arrays.asList(gitHubUserMentions(), htmlTags(), markdownStyling());
 
 	private final GitHubService service;
 
@@ -77,6 +78,8 @@ public class ChangelogGenerator {
 
 	private final List<ExternalLink> externalLinks;
 
+	private final boolean generateLinks;
+
 	public ChangelogGenerator(GitHubService service, ApplicationProperties properties) {
 		this.service = service;
 		this.repository = properties.getRepository();
@@ -88,6 +91,7 @@ public class ChangelogGenerator {
 		this.sections = new ChangelogSections(properties);
 		this.portedIssues = properties.getIssues().getPorts();
 		this.externalLinks = properties.getExternalLinks();
+		this.generateLinks = properties.getIssues().isGenerateLinks();
 	}
 
 	/**
@@ -119,14 +123,10 @@ public class ChangelogGenerator {
 	}
 
 	private int resolveMilestoneReference(String milestone) {
-		switch (this.milestoneReference) {
-		case TITLE:
-			return this.service.getMilestoneNumber(milestone, this.repository);
-		case ID:
-			return Integer.parseInt(milestone);
-		default:
-			throw new IllegalStateException("Unsupported milestone reference value " + this.milestoneReference);
-		}
+		return switch (this.milestoneReference) {
+			case TITLE -> this.service.getMilestoneNumber(milestone, this.repository);
+			case ID -> Integer.parseInt(milestone);
+		};
 	}
 
 	private String generateContent(List<Issue> issues) {
@@ -160,8 +160,11 @@ public class ChangelogGenerator {
 
 	private String getFormattedIssue(Issue issue) {
 		String title = issue.getTitle();
-		title = ghUserMentionPattern.matcher(title).replaceAll("$1`$2`");
-		return String.format("- %s %s%n", title, getLinkToIssue(issue));
+		for (Escape escape : escapes) {
+			title = escape.apply(title);
+		}
+		return (this.generateLinks) ? String.format("- %s %s%n", title, getLinkToIssue(issue))
+				: String.format("- %s%n", title);
 	}
 
 	private String getLinkToIssue(Issue issue) {
@@ -172,13 +175,17 @@ public class ChangelogGenerator {
 		if (this.excludeContributors.contains("*")) {
 			return Collections.emptySet();
 		}
-		return issues.stream().map(this::getPortedReferenceIssue).filter((issue) -> issue.getPullRequest() != null)
-				.map(Issue::getUser).filter(this::isIncludedContributor).collect(Collectors.toSet());
+		return issues.stream()
+			.map(this::getPortedReferenceIssue)
+			.filter((issue) -> issue.getPullRequest() != null)
+			.map(Issue::getUser)
+			.filter(this::isIncludedContributor)
+			.collect(Collectors.toSet());
 	}
 
 	private Issue getPortedReferenceIssue(Issue issue) {
 		for (PortedIssue portedIssue : this.portedIssues) {
-			List<String> labelNames = issue.getLabels().stream().map(Label::getName).collect(Collectors.toList());
+			List<String> labelNames = issue.getLabels().stream().map(Label::getName).toList();
 			if (labelNames.contains(portedIssue.getLabel())) {
 				Pattern pattern = portedIssue.getBodyExpression();
 				Matcher matcher = pattern.matcher(issue.getBody());
@@ -195,7 +202,8 @@ public class ChangelogGenerator {
 	}
 
 	private boolean isIncludedContributor(User user) {
-		return !this.excludeContributors.contains(user.getName());
+		String name = user.getName();
+		return !this.excludeContributors.contains(name) && !name.endsWith("[bot]");
 	}
 
 	private void addContributorsContent(StringBuilder content, Set<User> contributors) {
@@ -206,8 +214,7 @@ public class ChangelogGenerator {
 	}
 
 	private String formatContributors(Set<User> contributors) {
-		List<String> names = contributors.stream().map(User::getName).map((name) -> "@" + name).sorted()
-				.collect(Collectors.toList());
+		List<String> names = contributors.stream().map(User::getName).map((name) -> "@" + name).sorted().toList();
 		StringBuilder formatted = new StringBuilder();
 		String separator = (names.size() > 2) ? ", " : " ";
 		for (int i = 0; i < names.size(); i++) {
@@ -233,7 +240,63 @@ public class ChangelogGenerator {
 	}
 
 	private void writeContentToFile(String content, String path) throws IOException {
-		FileCopyUtils.copy(content, new FileWriter(new File(path)));
+		File file = new File(path).getAbsoluteFile();
+		File parent = file.getParentFile();
+		if (parent != null) {
+			parent.mkdirs();
+		}
+		FileCopyUtils.copy(content, new FileWriter(file));
+	}
+
+	private static Escape gitHubUserMentions() {
+		return new PatternEscape(Pattern.compile("(^|[^\\w`])(@[\\w-]+)"), "$1`$2`");
+	}
+
+	private static Escape htmlTags() {
+		return new PatternEscape(Pattern.compile("(^|[^\\w`])(<[\\w\\-/<>]+>)"), "$1`$2`");
+	}
+
+	private static Escape markdownStyling() {
+		return (input) -> {
+			boolean withinBackticks = false;
+			char previous = ' ';
+			StringBuilder result = new StringBuilder(input.length());
+			for (char c : input.toCharArray()) {
+				if (!withinBackticks && previous != '\\' && (c == '*' || c == '_' || c == '~')) {
+					result.append('\\');
+				}
+				result.append(c);
+				if (c == '`') {
+					withinBackticks = !withinBackticks;
+				}
+				previous = c;
+			}
+			return result.toString();
+		};
+	}
+
+	private interface Escape {
+
+		String apply(String input);
+
+	}
+
+	private static final class PatternEscape implements Escape {
+
+		private final Pattern pattern;
+
+		private final String replacement;
+
+		private PatternEscape(Pattern pattern, String replacement) {
+			this.pattern = pattern;
+			this.replacement = replacement;
+		}
+
+		@Override
+		public String apply(String input) {
+			return this.pattern.matcher(input).replaceAll(this.replacement);
+		}
+
 	}
 
 }
